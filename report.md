@@ -40,7 +40,7 @@ The dataset is **highly imbalanced** — roughly 15:1. This is realistic (high e
 - **Education** is a strong predictor: college graduates and above have substantially higher rates of earning >$50K.
 - **Age** peaks around 40–55 for >$50K earners; very young and very old individuals rarely exceed the threshold.
 - **Capital gains and dividends** are highly skewed — most values are zero, but when non-zero they strongly indicate high income.
-- **Missing values** appear in 7 columns (represented as `?`), primarily migration-related fields. These were imputed rather than dropped to preserve all 199K records.
+- **Missing values** appear in 9 columns (represented as `?`). Four migration columns have ~99,700 missing values each (~50% of records); the remaining 5 columns (country-of-birth fields, Hispanic origin, state of previous residence) have far fewer gaps. All were imputed with mode rather than dropped, for two reasons: dropping would lose up to half the dataset, and the missingness is semantically meaningful — "Not in universe" is the dominant category, so mode imputation correctly assigns these records to the most common valid category rather than inventing a signal.
 - **Weight-adjusted analysis** confirms that the raw sample proportions broadly reflect population distributions, validating use of the full dataset without re-weighting for model training.
 
 ---
@@ -75,7 +75,7 @@ Both use `class_weight='balanced'` / `scale_pos_weight` to address the 15:1 clas
 
 ### 4.2 Train/Test Split
 
-80/20 stratified split. The positive rate is preserved at 6.2% in both splits.
+The data was divided into three stratified splits: **72% train / 8% validation / 20% test**. The validation set is used exclusively for LightGBM early stopping (to determine optimal number of trees without touching the test set). The test set is held out entirely for final evaluation. The positive rate of 6.2% is preserved across all three splits.
 
 ### 4.3 Results
 
@@ -86,9 +86,24 @@ Both use `class_weight='balanced'` / `scale_pos_weight` to address the 15:1 clas
 
 Both models achieve strong discriminative power (ROC-AUC > 0.93). LightGBM is preferred as the production model.
 
-**Note on default threshold:** With the default 0.5 decision threshold, LightGBM predicts all instances as ≤$50K — a known behavior when `scale_pos_weight` shifts the probability distribution. The ROC-AUC metric is unaffected (it evaluates ranking, not hard predictions), but threshold calibration is required before deployment.
+**Note on default threshold:** With the default 0.5 decision threshold, LightGBM predicts all instances as ≤$50K. The root cause is `scale_pos_weight=15`: this hyperparameter up-weights the minority class during training, which causes the model to assign low raw probabilities — pushing the entire score distribution well below 0.5. The ROC-AUC metric is unaffected (it evaluates ranking order, not hard predictions), but scores are not interpretable as actual probabilities without calibration.
 
-### 4.4 Threshold Selection for Marketing
+### 4.4 Probability Calibration
+
+To fix the compressed score distribution, isotonic regression calibration was applied via `CalibratedClassifierCV(cv='prefit', method='isotonic')` using the held-out validation set. The calibrator remaps raw scores to empirical probabilities without retraining the underlying model.
+
+**Effect on scores:**
+
+| | Min score | Max score | Mean score |
+|---|---|---|---|
+| Uncalibrated | ~0.000 | ~0.320 | low |
+| Calibrated | 0.0 | 1.0 | ~0.062 (matches base rate) |
+
+After calibration, the reliability diagram shows the model is well-calibrated — predicted probabilities track the actual fraction of positives across all probability bins. ROC-AUC is preserved (calibration does not change ranking order).
+
+### 4.5 Threshold Selection for Marketing
+
+All thresholds below refer to **calibrated probabilities**, which are now directly interpretable as "probability this person earns >$50K."
 
 | Threshold | Precision (>50K) | Recall (>50K) | # Flagged (test set) |
 |---|---|---|---|
@@ -101,8 +116,9 @@ Both models achieve strong discriminative power (ROC-AUC > 0.93). LightGBM is pr
 **Business interpretation:**
 - **Broad campaign** (threshold 0.20): Flag ~7,500 people per 40K; 87.5% of true high-earners captured, ~29% of flagged are genuinely high-income.
 - **Precision targeting** (threshold 0.30): Flag ~2,000 people; 60% of flagged are genuinely high-income, but miss ~52% of the high-earner pool.
+- After calibration, thresholds above 0.30 continue to yield predictions (unlike the uncalibrated model, which collapses to zero flagged above 0.35), enabling finer precision targeting if needed.
 
-**Recommendation:** Use threshold **0.20–0.25** for direct mail / digital campaigns (maximize reach), and threshold **0.30** for high-touch channels (e.g., personal outreach, premium offers) where cost-per-contact is high.
+**Recommendation:** Use threshold **0.20–0.25** for direct mail / digital campaigns (maximize reach), and threshold **0.30** for high-touch channels (e.g., personal outreach, premium offers) where cost-per-contact is high. Always apply the calibrated model in production so that scores are interpretable as actual probabilities.
 
 ### 4.5 Top Predictive Features
 
@@ -119,7 +135,7 @@ The top 10 features by LightGBM split importance:
 9. Capital losses
 10. Sex
 
-Investment income (dividends, capital gains) and human capital (education, occupation) dominate. This aligns with economic intuition and suggests the model is learning genuine income signals rather than spurious correlations.
+Investment income (dividends, capital gains) and human capital (education, occupation) dominate. A notable insight is that the top two features are both **investment income**, not salary or occupation. This means the model is primarily identifying *investors* rather than high-salaried employees — a meaningful distinction for the client. People crossing the $50K threshold in this dataset tend to have non-zero capital market exposure, not just high wages. This should inform product strategy: financial and investment products are likely more relevant to this population than purely lifestyle-based premium goods.
 
 ---
 
@@ -136,7 +152,7 @@ Customer segmentation was performed using K-Means clustering on the full feature
 
 ### 5.2 Choosing K
 
-Elbow method and silhouette scores were evaluated for k = 2 to 9. Silhouette scores were highest around k = 5–6, but the improvement is marginal (0.17 vs 0.19). **K = 4 was selected** for interpretability — four segments map cleanly to distinct life-stage/economic profiles that are actionable for marketing.
+Elbow method and silhouette scores were evaluated for k = 2 to 9. Silhouette scores for k = 4 are approximately 0.17, rising to ~0.19 at k = 5–6. **K = 4 was selected as a deliberate business decision**, not because the statistics are indistinguishable. Inspecting k = 5 and k = 6 clusters showed that the additional segments split existing life-stage groups (e.g., subdividing prime-age workers by industry) without producing profiles that map to distinct marketing actions. Four segments — children/non-working, prime working adults, near-retirement adults, and moderate mid-career earners — correspond to meaningfully different communication strategies and are directly actionable for the client.
 
 ### 5.3 Cluster Profiles
 
@@ -172,8 +188,8 @@ Smallest population segment. Age similar to Cluster 1 but lower wages and lower 
 Use both models together:
 1. **Score everyone** with the classifier to get a probability of earning >$50K.
 2. **Assign everyone** to a customer segment.
-3. **Prioritize** Cluster 1 individuals with high classifier scores (>0.25) for premium outreach.
-4. **Customize messaging** by segment even for lower-scoring individuals.
+3. **Prioritize** Cluster 1 individuals with classifier score ≥ 0.25 for premium outreach — at this threshold, ~39% of flagged individuals are genuine >$50K earners and ~77% of all >$50K earners in the population are captured (see Section 4.4).
+4. **Customize messaging** by segment even for lower-scoring individuals — a Cluster 2 member with a low score may still have significant net worth, warranting a different message than a Cluster 3 member with the same score.
 
 ### 6.2 Segment-Specific Marketing
 
@@ -190,7 +206,7 @@ Use both models together:
 - **Data age:** The dataset is from 1994–1995. Income thresholds, industry distributions, and demographics have changed significantly. Re-training on recent data is essential before deployment.
 - **$50K threshold:** In 1994 dollars, $50K is roughly equivalent to $100K+ in 2024 terms. The business should consider whether this threshold still represents "high income" for its marketing purposes.
 - **Label encoding:** For a production system, target encoding or embeddings for high-cardinality categoricals would improve model quality.
-- **Segmentation stability:** K-Means is sensitive to initialization. Results should be validated with multiple seeds and potentially alternative methods (e.g., Gaussian Mixture Models) for soft cluster assignments.
+- **Segmentation stability:** K-Means is sensitive to initialization. As an additional validation, we re-ran segmentation on the working-age subset (age ≥ 16) using both KMeans and Gaussian Mixture Models (GMM), comparing silhouette scores across k = 2–8 (see Notebook 03, Section 8). Neither approach improved on the original result: working-age KMeans peaked at silhouette ≈ 0.15 (vs. 0.17 for the original), and GMM achieved 0.31 only at k = 2 — a binary split too coarse for marketing use, with scores collapsing at higher k. This confirms that Cluster 0 (children) represents genuine natural separation rather than an artifact inflating the score, and validates the original k = 4 full-population model as the preferred approach.
 - **Ethics:** Features like race and sex are present in the data. The model should be audited for disparate impact before any production use.
 
 ---

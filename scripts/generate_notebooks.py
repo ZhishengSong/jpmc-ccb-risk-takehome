@@ -29,10 +29,10 @@ cell("## 1. Load Data", 'markdown'),
 
 cell("""
 # Read column names (one per line, no index prefix)
-with open('census-bureau.columns') as f:
+with open('data/census-bureau.columns') as f:
     cols = [line.strip() for line in f if line.strip()]
 
-df = pd.read_csv('census-bureau.data', header=None, names=cols)
+df = pd.read_csv('data/census-bureau.data', header=None, names=cols)
 print(f"Shape: {df.shape}")
 df.head(3)
 """),
@@ -83,7 +83,7 @@ weighted.plot(kind='bar', ax=axes[1], color=['steelblue','tomato'])
 axes[1].set_title('Population-Weighted Count')
 axes[1].set_xlabel('')
 plt.tight_layout()
-plt.savefig('fig_label_dist.png', dpi=100)
+plt.savefig('figures/fig_label_dist.png', dpi=100)
 plt.show()
 print("Class imbalance ratio:", round(label_counts.iloc[0]/label_counts.iloc[1], 1), ":1")
 """),
@@ -106,7 +106,7 @@ for i, col in enumerate(num_features[:10]):
     axes[i].set_ylabel('Count')
 plt.suptitle('Numerical Feature Distributions', y=1.01)
 plt.tight_layout()
-plt.savefig('fig_num_dist.png', dpi=100)
+plt.savefig('figures/fig_num_dist.png', dpi=100)
 plt.show()
 """),
 
@@ -124,7 +124,7 @@ for i, col in enumerate(key_cats):
     axes[i].set_title(col, fontsize=9)
     axes[i].invert_yaxis()
 plt.tight_layout()
-plt.savefig('fig_cat_dist.png', dpi=100)
+plt.savefig('figures/fig_cat_dist.png', dpi=100)
 plt.show()
 """),
 
@@ -139,7 +139,7 @@ edu_income.plot(kind='barh', color='steelblue', figsize=(10, 6))
 plt.title('% Earning >50K by Education Level')
 plt.xlabel('% >50K')
 plt.tight_layout()
-plt.savefig('fig_edu_income.png', dpi=100)
+plt.savefig('figures/fig_edu_income.png', dpi=100)
 plt.show()
 """),
 
@@ -150,7 +150,7 @@ df_plot.groupby(label_col)['age'].plot(kind='hist', bins=40, alpha=0.6, legend=T
 plt.title('Age Distribution by Income Group')
 plt.xlabel('Age')
 plt.tight_layout()
-plt.savefig('fig_age_income.png', dpi=100)
+plt.savefig('figures/fig_age_income.png', dpi=100)
 plt.show()
 """),
 
@@ -162,7 +162,7 @@ plt.figure(figsize=(10, 8))
 sns.heatmap(corr, annot=True, fmt='.2f', cmap='coolwarm', center=0, square=True)
 plt.title('Correlation Matrix — Numerical Features')
 plt.tight_layout()
-plt.savefig('fig_corr.png', dpi=100)
+plt.savefig('figures/fig_corr.png', dpi=100)
 plt.show()
 """),
 
@@ -202,7 +202,7 @@ df_clean.head(3)
 """),
 
 cell("""
-df_clean.to_csv('census_preprocessed.csv', index=False)
+df_clean.to_csv('data/census_preprocessed.csv', index=False)
 print("Saved: census_preprocessed.csv")
 print("Columns:", list(df_clean.columns))
 """),
@@ -225,7 +225,7 @@ import seaborn as sns
 import warnings
 warnings.filterwarnings('ignore')
 
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (classification_report, confusion_matrix,
                               roc_auc_score, roc_curve, precision_recall_curve,
@@ -240,7 +240,7 @@ sns.set_theme(style='whitegrid')
 cell("## 1. Load Data", 'markdown'),
 
 cell("""
-df = pd.read_csv('census_preprocessed.csv')
+df = pd.read_csv('data/census_preprocessed.csv')
 print("Shape:", df.shape)
 
 WEIGHT_COL = 'weight'
@@ -294,6 +294,11 @@ cell("""
 scale_pos = (y_train == 0).sum() / (y_train == 1).sum()
 print(f"scale_pos_weight: {scale_pos:.1f}")
 
+# Split a validation set from train (to avoid using test set for early stopping)
+X_tr, X_val, y_tr, y_val = train_test_split(
+    X_train, y_train, test_size=0.1, random_state=42, stratify=y_train
+)
+
 lgb_model = lgb.LGBMClassifier(
     n_estimators=500,
     learning_rate=0.05,
@@ -308,8 +313,8 @@ lgb_model = lgb.LGBMClassifier(
 )
 
 lgb_model.fit(
-    X_train, y_train,
-    eval_set=[(X_test, y_test)],
+    X_tr, y_tr,
+    eval_set=[(X_val, y_val)],
     callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(100)]
 )
 
@@ -327,11 +332,14 @@ cell("## 5. Evaluation", 'markdown'),
 cell("""
 fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-# Confusion Matrix
-cm = confusion_matrix(y_test, y_pred_lgb)
+# Confusion Matrix — use calibrated threshold (0.25) not default 0.5
+# Default threshold predicts all-negative due to scale_pos_weight distribution shift
+THRESHOLD = 0.25
+y_pred_lgb_cal = (y_prob_lgb >= THRESHOLD).astype(int)
+cm = confusion_matrix(y_test, y_pred_lgb_cal)
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[0],
             xticklabels=['<=50K', '>50K'], yticklabels=['<=50K', '>50K'])
-axes[0].set_title('Confusion Matrix — LightGBM')
+axes[0].set_title(f'Confusion Matrix — LightGBM (threshold={THRESHOLD})')
 axes[0].set_ylabel('Actual')
 axes[0].set_xlabel('Predicted')
 
@@ -353,7 +361,7 @@ axes[2].set_xlabel('Recall'); axes[2].set_ylabel('Precision')
 axes[2].set_title('Precision-Recall Curve'); axes[2].legend()
 
 plt.tight_layout()
-plt.savefig('fig_classification_eval.png', dpi=100)
+plt.savefig('figures/fig_classification_eval.png', dpi=100)
 plt.show()
 """),
 
@@ -367,7 +375,7 @@ top20.sort_values().plot(kind='barh', color='steelblue', figsize=(10, 7))
 plt.title('Top 20 Feature Importances — LightGBM')
 plt.xlabel('Importance (split count)')
 plt.tight_layout()
-plt.savefig('fig_feature_importance.png', dpi=100)
+plt.savefig('figures/fig_feature_importance.png', dpi=100)
 plt.show()
 
 print("Top 10 features:")
@@ -423,7 +431,9 @@ print(\"\"\"
      customers, but more low-income people included (lower precision).
    - High threshold (0.5-0.6): High precision — target only very likely high-income
      customers, smaller but higher-quality list.
-   Recommended: threshold ~0.35 for balanced recall/precision in direct marketing.
+   Recommended: threshold 0.20-0.25 for broad marketing campaigns (recall-focused),
+   or 0.30 for high-touch precision channels. Avoid 0.35+ as the model outputs
+   no positive predictions beyond that point due to score distribution.
 
 3. Top predictive signals: capital gains, dividends, education, age, weeks worked.
    These align with intuition — investment income and education strongly predict
@@ -464,7 +474,7 @@ sns.set_theme(style='whitegrid')
 cell("## 1. Load Data", 'markdown'),
 
 cell("""
-df = pd.read_csv('census_preprocessed.csv')
+df = pd.read_csv('data/census_preprocessed.csv')
 print("Shape:", df.shape)
 
 WEIGHT_COL = 'weight'
@@ -503,7 +513,7 @@ plt.ylabel('Cumulative Explained Variance')
 plt.title('PCA — Cumulative Explained Variance')
 plt.legend()
 plt.tight_layout()
-plt.savefig('fig_pca_variance.png', dpi=100)
+plt.savefig('figures/fig_pca_variance.png', dpi=100)
 plt.show()
 """),
 
@@ -547,7 +557,7 @@ axes[1].set_ylabel('Silhouette Score')
 axes[1].set_title('Silhouette Score')
 
 plt.tight_layout()
-plt.savefig('fig_kmeans_selection.png', dpi=100)
+plt.savefig('figures/fig_kmeans_selection.png', dpi=100)
 plt.show()
 """),
 
@@ -588,7 +598,7 @@ plt.ylabel(f'PC2 ({pca2d.explained_variance_ratio_[1]*100:.1f}%)')
 plt.title('Customer Segments — PCA 2D Projection')
 plt.legend(markerscale=3)
 plt.tight_layout()
-plt.savefig('fig_clusters_2d.png', dpi=100)
+plt.savefig('figures/fig_clusters_2d.png', dpi=100)
 plt.show()
 """),
 
@@ -625,7 +635,7 @@ plt.xlabel('Cluster')
 plt.ylabel('% >50K')
 plt.xticks(rotation=0)
 plt.tight_layout()
-plt.savefig('fig_cluster_income.png', dpi=100)
+plt.savefig('figures/fig_cluster_income.png', dpi=100)
 plt.show()
 """),
 
@@ -638,7 +648,7 @@ sns.heatmap(profile_norm.T, annot=cluster_profiles.T.round(1), fmt='g',
 ax.set_title('Cluster Profiles — Z-scored Means (annotations = actual mean)')
 ax.set_xlabel('Cluster')
 plt.tight_layout()
-plt.savefig('fig_cluster_heatmap.png', dpi=100)
+plt.savefig('figures/fig_cluster_heatmap.png', dpi=100)
 plt.show()
 """),
 
@@ -648,43 +658,187 @@ cell("""
 print(\"\"\"
 Based on weighted cluster profiles and income rates:
 
-After fitting k=4 clusters, typical segments observed in this census dataset:
+Cluster 0 — Children / Non-Working (28.0% of population)
+  Avg age: ~9 years. Represents minors and non-labor-force participants.
+  Wage: ~$1/hr  |  Capital gains: ~$5  |  Income >50K: 0.0%
+  Marketing angle: Not a direct target; reach via parents (Cluster 1/2).
+  Relevant for: children's products, education savings plans, family offers.
 
-Cluster 0 — "Young Low-Income Workers"
-  Characteristics: younger age, lower education, low wages, few weeks worked
-  Income >50K rate: typically lowest
-  Marketing angle: entry-level financial products, education loans, budget retail
+Cluster 1 — Prime Working Adults (44.8% of population)  [LARGEST SEGMENT]
+  Avg age: 38 years. Full-time workers with meaningful investment income.
+  Wage: ~$120/hr  |  Capital gains: ~$824  |  Income >50K: 12.4%
+  Marketing angle: PRIMARY acquisition target for premium retail.
+  Relevant for: luxury goods, investment products, travel, career development.
 
-Cluster 1 — "High-Income Professionals"
-  Characteristics: higher age, more education, significant capital gains/dividends
-  Income >50K rate: highest
-  Marketing angle: premium products, investment services, luxury retail, wealth mgmt
+Cluster 2 — Older / Near-Retirement Adults (20.5% of population)
+  Avg age: 58.5 years. Low wages but notable dividends ($493/yr avg).
+  Wage: ~$1/hr  |  Capital gains: ~$244  |  Income >50K: 2.4%
+  Note: Low current income may mask significant accumulated net worth.
+  Relevant for: retirement planning, health & wellness, leisure/travel.
 
-Cluster 2 — "Middle-Income Families"
-  Characteristics: mid-age, moderate education, full-time employment
-  Income >50K rate: moderate
-  Marketing angle: family products, home improvement, insurance, mid-range retail
-
-Cluster 3 — "Not in Labor Force / Part-Time"
-  Characteristics: mixed age, limited weeks worked, low wages
-  Income >50K rate: low
-  Marketing angle: budget products, social services, re-employment programs
+Cluster 3 — Mid-Career Moderate Earners (6.8% of population)
+  Avg age: 39 years. Works part-year; lower wages than Cluster 1.
+  Wage: ~$45/hr  |  Capital gains: ~$314  |  Income >50K: 5.4%
+  Likely includes part-time workers, self-employed, or career-changers.
+  Relevant for: mid-market retail, financial education, flexible benefit products.
 
 === Strategic Recommendations ===
 
-1. COMBINE with classifier: Use classification score as an additional feature
-   when profiling segments — e.g., 'high-income professionals with >80% model
-   confidence' are the highest-value marketing targets.
+1. COMBINE with classifier: Score each individual with the classifier and
+   cross-reference with their cluster. Cluster 1 members with classifier
+   score >0.25 are the highest-value targets for premium outreach.
 
-2. Cluster 1 is the prime acquisition target for premium retail. Despite being
-   a small population share (~6-8% weighted), they likely account for
-   disproportionate spending.
+2. Cluster 1 (44.8%) is the dominant addressable segment — broad campaigns
+   here are cost-effective AND reach the highest concentration of >50K earners.
 
-3. Cluster 2 represents the largest addressable mid-market — broad campaigns
-   with moderate personalization are cost-effective here.
+3. Cluster 2 has low income rate but high dividend income, suggesting hidden
+   wealth. Suitable for net-worth-based (vs income-based) product targeting.
 
-4. Re-run segmentation annually as economic conditions shift.
+4. Cluster 0 (children) can be reached indirectly via Cluster 1/2 parents —
+   family bundle messaging is the right channel.
+
+5. Re-run segmentation annually as economic conditions shift.
 \"\"\")
+"""),
+
+cell("---\\n## 8. Enhancement — Re-segmentation on Working-Age Population", 'markdown'),
+
+cell("""
+# Cluster 0 (children, avg age ~9) creates an easy split that dominates the
+# silhouette score. Here we re-cluster only the working-age population (age >= 16)
+# and compare KMeans against a Gaussian Mixture Model (GMM).
+# Original 4-cluster results above are unchanged.
+from sklearn.mixture import GaussianMixture
+
+df_work = df[df['age'] >= 16].copy()
+w_work = df_work[WEIGHT_COL]
+y_work = df_work[TARGET]
+X_work = df_work[feature_cols].copy()
+
+print(f"Full dataset:          {len(df):,} records")
+print(f"Working-age (age>=16): {len(df_work):,} records")
+print(f"Excluded (children):   {len(df)-len(df_work):,} records ({(1-len(df_work)/len(df))*100:.1f}%)")
+print(f"Working-age >50K rate: {y_work.mean()*100:.1f}%")
+"""),
+
+cell("""
+scaler_w = StandardScaler()
+X_work_scaled = scaler_w.fit_transform(X_work)
+
+pca_w = PCA(n_components=20, random_state=42)
+X_work_pca = pca_w.fit_transform(X_work_scaled)
+print(f"PCA 20 components explain {pca_w.explained_variance_ratio_.sum()*100:.1f}% variance (working-age)")
+"""),
+
+cell("""
+K_range2 = range(2, 9)
+inertias2, sil_km2, sil_gmm2 = [], [], []
+
+sample_idx2 = np.random.choice(len(X_work_pca), size=10000, replace=False)
+X_sample2 = X_work_pca[sample_idx2]
+
+for k in K_range2:
+    km2 = MiniBatchKMeans(n_clusters=k, random_state=42, n_init=5, batch_size=5000)
+    km2.fit(X_work_pca)
+    inertias2.append(km2.inertia_)
+    lbl_km = km2.predict(X_sample2)
+    sil_km2.append(silhouette_score(X_sample2, lbl_km, sample_size=5000, random_state=42))
+
+    gmm = GaussianMixture(n_components=k, covariance_type='diag', random_state=42, max_iter=100)
+    gmm.fit(X_work_pca)
+    lbl_gmm = gmm.predict(X_sample2)
+    sil_gmm2.append(silhouette_score(X_sample2, lbl_gmm, sample_size=5000, random_state=42))
+
+    print(f"k={k}: KMeans sil={sil_km2[-1]:.4f}  |  GMM sil={sil_gmm2[-1]:.4f}")
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+axes[0].plot(list(K_range2), inertias2, 'o-', color='steelblue')
+axes[0].set_xlabel('k'); axes[0].set_ylabel('Inertia')
+axes[0].set_title('Elbow — Working-Age KMeans')
+axes[1].plot(list(K_range2), sil_km2, 'o-', color='steelblue', label='KMeans')
+axes[1].plot(list(K_range2), sil_gmm2, 's--', color='tomato', label='GMM')
+axes[1].set_xlabel('k'); axes[1].set_ylabel('Silhouette')
+axes[1].set_title('Silhouette — KMeans vs GMM (Working-Age)')
+axes[1].legend()
+plt.tight_layout()
+plt.savefig('figures/fig_enhance_kselection.png', dpi=100)
+plt.show()
+"""),
+
+cell("""
+best_k2 = list(K_range2)[int(np.argmax(sil_km2))]
+best_k_gmm = list(K_range2)[int(np.argmax(sil_gmm2))]
+print(f"Best KMeans k: {best_k2}  (silhouette={max(sil_km2):.4f})")
+print(f"Best GMM k:    {best_k_gmm}  (silhouette={max(sil_gmm2):.4f})")
+
+km_work = MiniBatchKMeans(n_clusters=best_k2, random_state=42, n_init=10, batch_size=5000)
+df_work['cluster_km'] = km_work.fit_predict(X_work_pca)
+
+gmm_final = GaussianMixture(n_components=best_k_gmm, covariance_type='diag', random_state=42, max_iter=200)
+gmm_final.fit(X_work_pca)
+df_work['cluster_gmm'] = gmm_final.predict(X_work_pca)
+
+print("\\nKMeans cluster sizes (working-age):")
+print(df_work['cluster_km'].value_counts().sort_index())
+print("\\nGMM cluster sizes (working-age):")
+print(df_work['cluster_gmm'].value_counts().sort_index())
+"""),
+
+cell("""
+profile_cols2 = ['age', 'education', 'wage per hour', 'capital gains',
+                 'dividends from stocks', 'weeks worked in year',
+                 'num persons worked for employer']
+profile_cols2 = [c for c in profile_cols2 if c in df_work.columns]
+
+def weighted_mean2(df_g, wcol, pcols):
+    return (df_g[pcols].multiply(df_g[wcol], axis=0)).sum() / df_g[wcol].sum()
+
+print("=== KMeans profiles (working-age) ===")
+km_prof = df_work.groupby('cluster_km').apply(lambda g: weighted_mean2(g, WEIGHT_COL, profile_cols2))
+km_income = df_work.groupby('cluster_km').apply(
+    lambda g: np.average(g[TARGET], weights=g[WEIGHT_COL]) * 100)
+km_share = df_work.groupby('cluster_km')[WEIGHT_COL].sum()
+km_share = (km_share / km_share.sum() * 100).round(1)
+km_prof['% >50K'] = km_income.round(1)
+km_prof['pop_share%'] = km_share
+print(km_prof.round(2))
+
+print("\\n=== GMM profiles (working-age) ===")
+gmm_prof = df_work.groupby('cluster_gmm').apply(lambda g: weighted_mean2(g, WEIGHT_COL, profile_cols2))
+gmm_income = df_work.groupby('cluster_gmm').apply(
+    lambda g: np.average(g[TARGET], weights=g[WEIGHT_COL]) * 100)
+gmm_share = df_work.groupby('cluster_gmm')[WEIGHT_COL].sum()
+gmm_share = (gmm_share / gmm_share.sum() * 100).round(1)
+gmm_prof['% >50K'] = gmm_income.round(1)
+gmm_prof['pop_share%'] = gmm_share
+print(gmm_prof.round(2))
+"""),
+
+cell("""
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+km_income.plot(kind='bar', ax=axes[0], color='steelblue', edgecolor='white')
+axes[0].set_title(f'KMeans (k={best_k2}) — % >50K per Cluster\\n(Working-Age Population)')
+axes[0].set_xlabel('Cluster'); axes[0].set_ylabel('% Earning >50K')
+axes[0].tick_params(rotation=0)
+
+gmm_income.plot(kind='bar', ax=axes[1], color='tomato', edgecolor='white')
+axes[1].set_title(f'GMM (k={best_k_gmm}) — % >50K per Cluster\\n(Working-Age Population)')
+axes[1].set_xlabel('Cluster'); axes[1].set_ylabel('% Earning >50K')
+axes[1].tick_params(rotation=0)
+
+plt.tight_layout()
+plt.savefig('figures/fig_enhance_income.png', dpi=100)
+plt.show()
+"""),
+
+cell("""
+sil_original = sil_scores[2]  # k=4, index 2 in K_range(2..9)
+print("=== Silhouette Score Comparison ===")
+print(f"Original  KMeans k=4  (full data, incl. children): {sil_original:.4f}")
+print(f"Enhanced  KMeans k={best_k2}  (working-age only):        {max(sil_km2):.4f}")
+print(f"Enhanced  GMM    k={best_k_gmm}  (working-age only):        {max(sil_gmm2):.4f}")
+print(f"\\nKMeans improved: {max(sil_km2) > sil_original}")
+print(f"GMM improved:    {max(sil_gmm2) > sil_original}")
 """),
 
 ]
